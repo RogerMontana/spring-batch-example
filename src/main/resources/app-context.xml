@@ -1,0 +1,167 @@
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:batch="http://www.springframework.org/schema/batch"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xmlns:tx="http://www.springframework.org/schema/tx"
+       xsi:schemaLocation="
+            http://www.springframework.org/schema/batch http://www.springframework.org/schema/batch/spring-batch.xsd
+		    http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+            http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd
+            http://www.springframework.org/schema/tx http://www.springframework.org/schema/tx/spring-tx.xsd">
+
+    <context:annotation-config/>
+    <tx:annotation-driven/>
+    <import resource="db-context-hibernate.xml"/>
+
+    <bean class="app.domain.service.BooksService"/>
+
+
+    <batch:job-repository id="jobRepository"
+                          data-source="dataSource"
+                          transaction-manager="transactionManager"/>
+
+    <bean id="authorPrototype" class="app.domain.entity.Author" scope="prototype"/>
+    <bean class="org.springframework.batch.core.launch.support.SimpleJobLauncher">
+        <property name="jobRepository" ref="jobRepository"/>
+    </bean>
+
+
+    <batch:job id="loadLibraryJob">
+        <batch:listeners>
+            <batch:listener ref="setupCleanupEnvListener"/>
+        </batch:listeners>
+
+        <batch:validator ref="parametersValidator"/>
+
+        <batch:split id="loadIndividuals" next="loadMappings" task-executor="taskExecutor">
+            <batch:flow>
+                <batch:step id="loadBooks">
+                    <batch:tasklet>
+                        <batch:chunk reader="booksFileReader" writer="jpaWriter" commit-interval="100"/>
+                    </batch:tasklet>
+                </batch:step>
+            </batch:flow>
+            <batch:flow>
+                <batch:step id="loadAuthors">
+                    <batch:tasklet>
+                        <batch:chunk reader="authorsFileReader" writer="jpaWriter" commit-interval="100"/>
+                    </batch:tasklet>
+                </batch:step>
+            </batch:flow>
+        </batch:split>
+        <batch:step id="loadMappings" next="printSummary">
+            <batch:tasklet>
+                <batch:chunk reader="mappingsFileReader" processor="mappingsProcessor" writer="bookWriter"
+                             commit-interval="100"/>
+            </batch:tasklet>
+        </batch:step>
+
+        <batch:step id="printSummary">
+            <batch:tasklet>
+                <bean class="app.batch.PrintSummaryTasklet"/>
+            </batch:tasklet>
+        </batch:step>
+    </batch:job>
+    <bean id="taskExecutor" class="org.springframework.core.task.SimpleAsyncTaskExecutor"/>
+    <bean id="parametersValidator" class="org.springframework.batch.core.job.DefaultJobParametersValidator">
+        <property name="requiredKeys" value="input-file"/>
+    </bean>
+
+    <bean id="setupCleanupEnvListener" class="app.batch.SetupCleanupEnvListener">
+        <property name="workingLocation" value="file:work"/>
+    </bean>
+    <bean id="bookPrototype" class="app.domain.entity.Book" scope="prototype"/>
+
+    <bean id="booksFileReader" class="org.springframework.batch.item.file.FlatFileItemReader">
+        <property name="resource" value="file:work/books.txt"/>
+        <property name="lineMapper">
+            <bean class="org.springframework.batch.item.file.mapping.DefaultLineMapper">
+                <property name="lineTokenizer">
+                    <bean class="org.springframework.batch.item.file.transform.DelimitedLineTokenizer">
+                        <property name="delimiter" value=";"/>
+                        <property name="names" value="isbn,language,title"/>
+                    </bean>
+                </property>
+                <property name="fieldSetMapper">
+                    <bean class="org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper">
+                        <property name="prototypeBeanName" value="bookPrototype"/>
+                    </bean>
+                </property>
+            </bean>
+        </property>
+    </bean>
+
+
+    <bean id="authorsFileReader" class="org.springframework.batch.item.file.FlatFileItemReader">
+        <property name="resource" value="file:work/authors.txt"/>
+        <property name="lineMapper">
+            <bean class="org.springframework.batch.item.file.mapping.DefaultLineMapper">
+                <property name="lineTokenizer">
+                    <bean class="org.springframework.batch.item.file.transform.DelimitedLineTokenizer">
+                        <property name="delimiter" value=";"/>
+                        <property name="names" value="name"/>
+                    </bean>
+                </property>
+                <property name="fieldSetMapper">
+                    <bean class="org.springframework.batch.item.file.mapping.BeanWrapperFieldSetMapper">
+                        <property name="prototypeBeanName" value="authorPrototype"/>
+                    </bean>
+                </property>
+            </bean>
+        </property>
+    </bean>
+
+    <bean id="mappingsFileReader" class="org.springframework.batch.item.file.FlatFileItemReader">
+        <property name="resource" value="file:work/book-author-mappings.txt"/>
+        <property name="lineMapper">
+            <bean class="org.springframework.batch.item.file.mapping.DefaultLineMapper">
+                <property name="lineTokenizer">
+                    <bean class="org.springframework.batch.item.file.transform.DelimitedLineTokenizer">
+                        <property name="delimiter" value=";"/>
+                        <property name="names" value="isbn,name"/>
+                    </bean>
+                </property>
+                <property name="fieldSetMapper">
+                    <bean class="org.springframework.batch.item.file.mapping.PassThroughFieldSetMapper"/>
+                </property>
+            </bean>
+        </property>
+    </bean>
+    <bean id="mappingsProcessor" class="app.batch.BookMappingProcessor"/>
+
+
+    <bean id="jpaWriter" class="org.springframework.batch.item.database.JpaItemWriter">
+        <property name="entityManagerFactory" ref="entityManagerFactory"/>
+    </bean>
+
+    <bean id="bookXmlWriter" class="org.springframework.batch.item.xml.StaxEventItemWriter">
+        <property name="resource" value="file:books.xml"/>
+        <property name="rootTagName" value="books"/>
+        <property name="marshaller">
+            <bean class="org.springframework.oxm.jaxb.Jaxb2Marshaller">
+                <property name="classesToBeBound">
+                    <array>
+                        <value>app.domain.entity.Author</value>
+                        <value>app.domain.entity.Book</value>
+                    </array>
+                </property>
+                <property name="marshallerProperties">
+                    <map>
+                        <entry key="jaxb.formatted.output" value-type="java.lang.Boolean" value="true"/>
+                    </map>
+                </property>
+            </bean>
+        </property>
+    </bean>
+
+    <bean id="bookWriter" class="org.springframework.batch.item.support.CompositeItemWriter">
+        <property name="delegates">
+            <list>
+                <ref bean="jpaWriter"/>
+                <ref bean="bookXmlWriter"/>
+            </list>
+        </property>
+    </bean>
+
+
+</beans>
